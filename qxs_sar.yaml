@@ -1,0 +1,13 @@
+# qxs_sar.yaml
+# 根据你之前提供的数据集路径和切分结果配置
+
+# 仅指向 RGB 图像路径
+train: /mnt/sdb/lijing/ImageFusion/ShipDetection/SAR_OPT_datasets/SAR-OPT/MHFNet_dataset/QXS-datasets/dataset_split/images/train/sar
+val: /mnt/sdb/lijing/ImageFusion/ShipDetection/SAR_OPT_datasets/SAR-OPT/MHFNet_dataset/QXS-datasets/dataset_split/images/val/sar
+test: /mnt/sdb/lijing/ImageFusion/ShipDetection/SAR_OPT_datasets/SAR-OPT/MHFNet_dataset/QXS-datasets/dataset_split/images/test/sar
+
+# 类别数量 (如果是单纯的 Ship Detection 船舶检测，通常是 1 类)
+nc: 1
+
+# 类别名称
+names: ['ship']
