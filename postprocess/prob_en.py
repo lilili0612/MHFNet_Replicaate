@@ -323,6 +323,35 @@ def dmp_fusion(info_rgb, info_sar, mu=0.7):
             fused_scores.append(scores2[i])
 
     return np.array(fused_boxes), torch.Tensor(fused_scores), None
+
+
+def dmp_fusion_multimodal(infos, mu=0.7):
+    """
+    支持任意数量模态的 DMP-Fusion
+    infos: 一个列表，包含多个模态的 info 字典 [info_rgb, info_sar, info_fusion]
+    """
+    if len(infos) == 0:
+        return [], [], []
+
+    # 初始状态：以第一个模态的结果为基准
+    current_info = infos[0]
+
+    for i in range(1, len(infos)):
+        next_info = infos[i]
+
+        # 调用你写好的双模态 dmp_fusion
+        fused_boxes, fused_scores, _ = dmp_fusion(current_info, next_info, mu=mu)
+
+        # 将融合结果打包成 info 字典，供下一次循环使用
+        current_info = {
+            'bbox': fused_boxes.tolist() if isinstance(fused_boxes, np.ndarray) else fused_boxes,
+            'score': fused_scores.tolist() if isinstance(fused_scores, torch.Tensor) else fused_scores,
+            'prob': [[s] for s in fused_scores],  # 重建 prob 格式
+            'class': [1.0] * len(fused_boxes)  # 单类 ship 设为 1.0
+        }
+
+    return np.array(current_info['bbox']), torch.Tensor(current_info['score']), None
+
 #-------------------------------------------------------------------------
 
 
@@ -346,6 +375,21 @@ def preprocess_det(det):
     return infos
 
 
+def filter_det(info, conf_thresh=0.05):
+    """
+    预过滤低置信度框，防止背景噪声毒害 DMP-Fusion 的贝叶斯更新
+    """
+    keep = [idx for idx, s in enumerate(info['score']) if s >= conf_thresh]
+    filtered_info = {
+        'bbox': [info['bbox'][idx] for idx in keep],
+        'score': [info['score'][idx] for idx in keep],
+        'class': [info['class'][idx] for idx in keep]
+    }
+    # 如果原来的字典里有 prob 字段，也顺便过滤了
+    if 'prob' in info:
+        filtered_info['prob'] = [info['prob'][idx] for idx in keep]
+    return filtered_info
+
 def apply_late_fusion_and_evaluate(det_1, det_2, method, det_3=''):
     img_folder = '../../../Datasets/FLIR/val/thermal_8_bit/'
     print('Method: ', method)
@@ -362,6 +406,12 @@ def apply_late_fusion_and_evaluate(det_1, det_2, method, det_3=''):
     for i in tqdm(range(len(info_1_list))):
         info_1 = info_1_list[i]
         info_2 = info_2_list[i]
+        # # ==========================================================
+        # # 【核心修改】：在这里调用 filter_det，提前剔除置信度低于 0.1 的框
+        # # ==========================================================
+        # info_1 = filter_det(info_1_list[i], conf_thresh=0.7)
+        # info_2 = filter_det(info_2_list[i], conf_thresh=0.7)
+
         num_detections = int(len(info_1['bbox']) > 0) + int(len(info_2['bbox']) > 0)
         if det_3:
             info_3 = info_3_list[i]
@@ -394,30 +444,51 @@ def apply_late_fusion_and_evaluate(det_1, det_2, method, det_3=''):
             else:    
                 if len(info_1['bbox']) == 0:
                     # out_boxes, out_scores, out_class = fusion(method, info_2, info_3)
-                    out_boxes, out_scores, out_class = dmp_fusion(info_1, info_2, mu=0.7)
+                    out_boxes, out_scores, out_class = dmp_fusion(info_2, info_3, mu=0.7)
                 elif len(info_2['bbox']) == 0:
                     # out_boxes, out_scores, out_class = fusion(method, info_1, info_3)
-                    out_boxes, out_scores, out_class = dmp_fusion(info_1, info_2, mu=0.7)
+                    out_boxes, out_scores, out_class = dmp_fusion(info_1, info_3, mu=0.7)
                 else:
                     # out_boxes, out_scores, out_class = fusion(method, info_1, info_2)
                     out_boxes, out_scores, out_class = dmp_fusion(info_1, info_2, mu=0.7)
-        # All models detected things
+        # All models detected things (替换了原本有 bug 的这部分代码)
         else:
-            # out_boxes, out_scores, out_class = fusion(method, info_1, info_2, info_3=info_3)
-            out_boxes, out_scores, out_class = dmp_fusion(info_1, info_2, mu=0.7)
+            if det_3:
+                # 当有三个模态输入时，调用你新写的 dmp_fusion_multimodal
+                out_boxes, out_scores, out_class = dmp_fusion_multimodal([info_1, info_2, info_3], mu=0.7)
+            else:
+                out_boxes, out_scores, out_class = dmp_fusion(info_1, info_2, mu=0.7)
+
+        # # =========================================================================
+        # # 【新增：全局 NMS 清理冗余框】
+        # # 解决 FP 爆表、 DET 数量过多的问题
+        # # =========================================================================
+        # import torchvision
+        # if len(out_boxes) > 0:
+        #     boxes_t = torch.tensor(out_boxes, dtype=torch.float32)
+        #     scores_t = torch.tensor(out_scores, dtype=torch.float32) if isinstance(out_scores,
+        #                                                                            list) else out_scores.clone().detach()
+        #
+        #     # 使用 NMS 剔除 IoU > 0.6 的重叠冗余框
+        #     keep_idx = torchvision.ops.nms(boxes_t, scores_t, iou_threshold=0.6)
+        #
+        #     out_boxes = boxes_t[keep_idx].numpy()
+        #     out_scores = scores_t[keep_idx]
+        # # =========================================================================
+
         # print(info_1)
         # print(info_2)
         # print(out_boxes, out_scores, out_class)
         for j in range(len(out_boxes)):
+            # # 为了防止低置信度垃圾框进入 COCO 评估拉低 Precision，可在此处过滤
+            # if out_scores[j].item() < 0.01:  # 过滤掉低于 1% 置信度的绝对背景
+            #     continue
+
             jdict.append({'image_id': i, 
                     'category_id': 1.0, 
                     'bbox': [round(box,5) for box in out_boxes[j].tolist()],
                     'score': round(out_scores[j].item(),7)})
     # import pdb; pdb.set_trace()
-    
-  
-            
-        
 
     end = time.time()
     total_time = end - start
@@ -427,8 +498,8 @@ def apply_late_fusion_and_evaluate(det_1, det_2, method, det_3=''):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--prediction_path', type=str, default='/mnt/sdb/lijing/ImageFusion/ShipDetection/MHFNet_paper/runs/val2', help='prediction path')  #'./runs/val'
-    parser.add_argument('--outfolder', type=str, default='/mnt/sdb/lijing/ImageFusion/ShipDetection/MHFNet_paper/runs/val2/YOLOv8n-allfusion/', help='model.json path')  #'D:/YOLO-MIF-master/runs/val/YOLOv8-allfusion/'
+    parser.add_argument('--prediction_path', type=str, default='/mnt/sdb/lijing/ImageFusion/ShipDetection/MHFNet_paper_v1/runs/val2', help='prediction path')  #'./runs/val'
+    parser.add_argument('--outfolder', type=str, default='/mnt/sdb/lijing/ImageFusion/ShipDetection/MHFNet_paper_v1/runs/val2/YOLOv8n-allfusion/', help='model.json path')  #'D:/YOLO-MIF-master/runs/val/YOLOv8-allfusion/'
     parser.add_argument('--score_fusion', type=str, default='max', help='model.json path')
     parser.add_argument('--box_fusion', type=str, default='s-avg', help='model.json path')
     args = parser.parse_args()
@@ -447,9 +518,9 @@ if __name__ == '__main__':
     # # val_json_path =  os.path.join(args.dataset_path , val_file_name)
     # # val_folder = os.path.join(args.dataset_path , 'thermal_8_bit')
 
-    det_file_1 = prediction_folder + '/YOLOv8n-RGB_single/predictions.json'
-    det_file_2 = prediction_folder + '/YOLOv8n-SAR_single/predictions.json'
-    det_file_3 = prediction_folder + '/YOLOv8n-vsff23/predictions.json'
+    det_file_1 = prediction_folder + '/YOLOv8n-RGB_single22/predictions.json'
+    det_file_2 = prediction_folder + '/YOLOv8n-SAR_single22/predictions.json'
+    det_file_3 = prediction_folder + '/YOLOv8n-vsff222/predictions.json'
 
     print('detection file 1:', det_file_1)
     print('detection file 2:', det_file_2)

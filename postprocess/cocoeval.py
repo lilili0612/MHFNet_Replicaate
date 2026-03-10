@@ -143,10 +143,10 @@ def _compute_and_display_metrics(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate Metrics from the predictions and Ground Truths")
     parser.add_argument("--gt-coco-path", default="/mnt/sdb/lijing/ImageFusion/ShipDetection/SAR_OPT_datasets/SAR-OPT/MHFNet_dataset/QXS-datasets/dataset_split/labels_coco/test/rgb.json", type=str)  #"D:/mmdetection/data/OPT/annotations/instances_val.json"
-    parser.add_argument("--evaluation-result-path", default="/mnt/sdb/lijing/ImageFusion/ShipDetection/MHFNet_paper/runs/val2/YOLOv8n-allfusion/predictions1.json", type=str)  #"D:/YOLO-MIF-master/runs/val/YOLOv8-allfusion/predictions1.json"  #合并的结果
+    parser.add_argument("--evaluation-result-path", default="/mnt/sdb/lijing/ImageFusion/ShipDetection/MHFNet_paper_v1/runs/val2/YOLOv8n-allfusion/predictions1.json", type=str)  #"D:/YOLO-MIF-master/runs/val/YOLOv8-allfusion/predictions1.json"  #合并的结果
     # parser.add_argument("--evaluation-result-path", default="/mnt/sdb/lijing/ImageFusion/ShipDetection/MHFNet_paper/runs/val2/YOLOv8n-SAR_single2/predictions.json", type=str)
 
-    parser.add_argument("--output-log-path", type=str, default="/mnt/sdb/lijing/ImageFusion/ShipDetection/MHFNet_paper/runs/val2/YOLOv8n-allfusion/evaluation.log")
+    parser.add_argument("--output-log-path", type=str, default="/mnt/sdb/lijing/ImageFusion/ShipDetection/MHFNet_paper_v1/runs/val2/YOLOv8n-allfusion/evaluation.log")
     parser.add_argument("--show-eval-summary", type=bool, default=True)
     parser.add_argument("--gt-eval-number", type=int, default=2239)  #1411
 

@@ -18,6 +18,12 @@ def transformer_opt(opt):
         opt['amp'] = False
     else:
         opt['amp'] = True
+
+    # 修改2: 在 train_RGBT.py 中向 opt 注入论文指定的 loss 权重
+    opt['box'] = 7.5
+    opt['cls'] = 0.5
+    opt['dfl'] = 1.5
+
     del opt['yaml']
     del opt['weight']
     del opt['info']
@@ -31,7 +37,7 @@ def parse_opt():
     parser.add_argument('--weight', type=str, default='yolov8n.pt', help='pretrained model path')
     parser.add_argument('--cfg', type=str, default='hyp.yaml', help='hyperparameters path')
     parser.add_argument('--data', type=str, default='data-vsff2.yaml', help='data yaml path')
-    parser.add_argument('--epochs', type=int, default=300, help='number of epochs to train for')
+    parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train for')  # 修改1: 修正 Epochs
     parser.add_argument('--patience', type=int, default=100, help='EarlyStopping patience (epochs without improvement)')
     parser.add_argument('--unamp', action='store_true', help='Unuse Automatic Mixed Precision (AMP) training')
     parser.add_argument('--batch', type=int, default=16, help='number of images per batch (-1 for AutoBatch)')

@@ -15,6 +15,7 @@ from .augment import Compose, Format, Instances, LetterBox, classify_albumentati
 from .base import BaseDataset
 from .utils import HELP_URL, LOGGER, get_hash, img2label_paths, verify_image_label
 
+import os
 
 class YOLODataset(BaseDataset):
     """
@@ -127,6 +128,43 @@ class YOLODataset(BaseDataset):
         labels = cache['labels']
         self.im_files = [lb['im_file'] for lb in labels]  # update im_files
 
+        # =========================================================================
+        # 【修改点 1：在这里新增读取 辅助模态(Auxiliary) 标签的逻辑】
+        # =========================================================================
+        for lb in labels:
+            im_file = lb['im_file']
+
+            # --- 核心：根据你的数据集目录结构，替换路径以获取另一模态的 txt ---
+            # 假设你的路径包含 'RGB' 和 'SAR' 关键字用于区分模态：
+            if 'RGB' in im_file:
+                aux_label_file = im_file.replace('images', 'labels').replace('RGB', 'SAR').replace('.jpg',
+                                                                                                   '.txt').replace(
+                    '.png', '.txt')
+            elif 'SAR' in im_file:
+                aux_label_file = im_file.replace('images', 'labels').replace('SAR', 'RGB').replace('.jpg',
+                                                                                                   '.txt').replace(
+                    '.png', '.txt')
+            else:
+                # 备用方案：如果全在同一个目录下，请自行修改此处的字符串替换逻辑
+                aux_label_file = im_file.replace('images', 'labels') + '_aux.txt'
+
+            aux_bboxes = []
+            aux_cls = []
+
+            if os.path.exists(aux_label_file):
+                with open(aux_label_file, 'r') as f:
+                    for line in f.read().strip().splitlines():
+                        vals = [float(x) for x in line.split()]
+                        if len(vals) == 5:  # [class, x_center, y_center, width, height]
+                            aux_cls.append([-1.0])  # 【关键】：将辅助模态的 class 设为 -1，作为记号
+                            aux_bboxes.append(vals[1:])
+
+            # 如果存在辅助模态框，将它们与主框合并，交由 YOLO 统一处理数据增强
+            if len(aux_bboxes) > 0:
+                lb['cls'] = np.concatenate((lb['cls'], np.array(aux_cls)), axis=0)
+                lb['bboxes'] = np.concatenate((lb['bboxes'], np.array(aux_bboxes)), axis=0)
+        # =========================================================================
+
         # Check if the dataset is all boxes or all segments
         lengths = ((len(lb['cls']), len(lb['bboxes']), len(lb['segments'])) for lb in labels)
         len_cls, len_boxes, len_segments = (sum(x) for x in zip(*lengths))
@@ -196,6 +234,29 @@ class YOLODataset(BaseDataset):
         for i in range(len(new_batch['batch_idx'])):
             new_batch['batch_idx'][i] += i  # add target image index for build_targets()
         new_batch['batch_idx'] = torch.cat(new_batch['batch_idx'], 0)
+
+        # =========================================================================
+        # 【修改点 2：在返回 batch 之前，把带有 -1 记号的辅助框单独剥离出来】
+        # =========================================================================
+        cls_all = new_batch['cls']
+        bboxes_all = new_batch['bboxes']
+        batch_idx_all = new_batch['batch_idx']
+
+        # 生成掩码：非 -1 是主模态， -1 是辅助模态
+        main_mask = (cls_all >= 0).view(-1)
+        aux_mask = (cls_all == -1).view(-1)
+
+        # 1. 恢复主模态：让网络正常的 Loss 只看到主模态框
+        new_batch['cls'] = cls_all[main_mask]
+        new_batch['bboxes'] = bboxes_all[main_mask]
+        new_batch['batch_idx'] = batch_idx_all[main_mask]
+
+        # 2. 剥离辅助模态：存入新字段，并把类别恢复为 0
+        new_batch['cls_aux'] = torch.zeros_like(cls_all[aux_mask])
+        new_batch['bboxes_aux'] = bboxes_all[aux_mask]
+        new_batch['batch_idx_aux'] = batch_idx_all[aux_mask]
+        # =========================================================================
+
         return new_batch
 
 

@@ -555,8 +555,14 @@ class C3_MixedDBB(C3):
         self.m = nn.Sequential(*(Bottleneck_MixedDBB(c_, c_, shortcut, g, k=(1, 3), e=1.0) for _ in range(n)))
 
 
-class C2f_CGA(nn.Module):
+class C2f_CGA_old(nn.Module):
     """CSP Bottleneck with 2 convolutions."""
+    '''
+    先拼接SAR和RGB的特征，
+    经过cv1(1x1卷积)处理（这等同于在通道维度上把 SAR 和 RGB 混合搅拌在了一起），
+    然后再 chunk(2, 1)，这样切出来的 y[0] 和 y[-1] 已经不再是 F_SAR 和 F_RGB 了，而是两块不知名的大杂烩特征。
+    这让后续精妙的 CGAFusion （内容引导注意力）彻底失去了“跨模态”意义
+    '''
 
     def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
         super().__init__()
@@ -576,6 +582,44 @@ class C2f_CGA(nn.Module):
         y = list(self.cv1(x).split((self.c, self.c), 1))
         y.extend(m(y[-1], y[0]) for m in self.m)
         return self.cv2(torch.cat(y, 1))
+
+
+class C2f_CGA(nn.Module):
+    """
+    MHFNet: FAFM Module (Feature Alignment and Fusion Module)
+    直接接收 concat 后的多模态特征，将其拆分并应用 Content-Guided Attention 融合。
+    """
+
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
+        super().__init__()
+        # c1 是 Concat 后的通道数（例如：P3层为 256 + 256 = 512）
+        # 独立的 SAR 和 RGB 分支各自的维度为 c1 // 2
+        self.f_dim = c1 // 2
+
+        # 核心融合模块
+        self.cga = CGAFusion(self.f_dim)
+
+        # 如果需要将融合后的特征对齐到目标输出维度 c2
+        self.proj = Conv(self.f_dim, c2, 1) if self.f_dim != c2 else nn.Identity()
+
+    def forward(self, x):
+        # 严格执行 MHFNet 结构设计
+        # 1. 避免提前混合特征，直接从拼接层 (Concat) 将维度一分为二
+        # 在 YAML 定义中：Concat 的索引 0 是 SAR，索引 1 是 RGB
+        f_sar, f_rgb = torch.chunk(x, 2, dim=1)
+
+        # 2. 传入 CGAFusion 执行公式 (4)
+        # f_fuse = Conv1x1(F_RGB * W_PA + F_SAR * (1-W_PA) + F_SAR + F_RGB)
+        f_fuse = self.cga(f_rgb, f_sar)
+
+        # 3. 输出所需的通道数
+        return self.proj(f_fuse)
+
+    def forward_split(self, x):
+        """兼容备用函数"""
+        f_sar, f_rgb = torch.split(x, x.shape[1] // 2, dim=1)
+        f_fuse = self.cga(f_rgb, f_sar)
+        return self.proj(f_fuse)
 
 ######################################## C2f-DDB end ########################################
 # --------------------------------------------------------
@@ -683,9 +727,13 @@ class PixelAttention(nn.Module):
         x2 = torch.cat([x, pattn1], dim=2)  # B, C, 2, H, W
         # 将 x 和 pattn1 沿着通道维度拼接。
         # x2.shape = torch.Size([3, 64, 64, 64])
-        x2 = Rearrange('b c t h w -> b (c t) h w')(x2)
-        # 使用 Rearrange 函数重新排列 x2 的形状，这里应该是一个错误，因为 PyTorch 没有内置的 Rearrange 函数。
-        # 正确的操作可能是使用 view 或 permute 来重新排列张量。
+
+        # x2 = Rearrange('b c t h w -> b (c t) h w')(x2)
+        # # 使用 Rearrange 函数重新排列 x2 的形状，这里应该是一个错误，因为 PyTorch 没有内置的 Rearrange 函数。
+        # # 正确的操作可能是使用 view 或 permute 来重新排列张量。
+        # 修复点：直接使用 reshape，替代原本可能引发报错的 Rearrange 函数
+        # 由于 dim=2 的维度被展平，通道变为 C*2，每组自动处理[x_i, pattn_i]
+        x2 = x2.reshape(B, C * 2, H, W)
 
         pattn2 = self.pa2(x2)  # pattn2 torch.Size([3, 32, 64, 64])
         # 将拼接和重新排列后的张量 x2 输入到之前定义的卷积层 self.pa2 中。
